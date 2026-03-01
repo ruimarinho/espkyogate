@@ -150,6 +150,7 @@ void BentelKyo::loop() {
     this->backoff_until_ms_ = 0;
     if (!was_ok) {
       this->force_publish_ = true;
+      this->text_sensor_republish_counter_ = 119;  // trigger text sensor re-read next cycle
       ESP_LOGI(TAG, "Panel communication restored");
     }
   } else {
@@ -200,6 +201,7 @@ void BentelKyo::set_polling_enabled(bool enabled) {
   if (enabled) {
     ESP_LOGI(TAG, "Polling enabled — resuming panel communication");
     this->force_publish_ = true;
+    this->text_sensor_republish_counter_ = 119;  // trigger text sensor re-read next cycle
   } else {
     ESP_LOGW(TAG, "Polling disabled — serial communication stopped");
     // Abort any in-progress serial transaction
@@ -267,12 +269,12 @@ void BentelKyo::update() {
   // Re-publish text sensors periodically (every 120 polling cycles = ~60s at 500ms)
   // Text sensors are static config data but must be re-published so API clients
   // that connect after initial publish (e.g. Home Assistant reconnects) get the state.
+  // Re-arms the config step machine (steps 10-12) to route reads through the
+  // bus-collision-safe path instead of blocking inline.
   if (this->config_read_step_ >= 13) {
     this->text_sensor_republish_counter_++;
-    if (this->force_publish_ || this->text_sensor_republish_counter_ >= 120) {
-      this->read_panel_mode_();
-      this->read_status_flags_();
-      this->publish_text_sensors_();
+    if (this->text_sensor_republish_counter_ >= 120) {
+      this->config_read_step_ = 10;  // re-arm: panel mode → status flags → publish
       this->text_sensor_republish_counter_ = 0;
     }
   }
