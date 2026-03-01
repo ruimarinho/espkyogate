@@ -26,20 +26,22 @@ void BentelKyo::setup() {
   this->force_publish_ = true;
 }
 
+const char *BentelKyo::alarm_model_name_(AlarmModel model) {
+  switch (model) {
+    case AlarmModel::KYO_4: return "KYO4";
+    case AlarmModel::KYO_8: return "KYO8";
+    case AlarmModel::KYO_8G: return "KYO8G";
+    case AlarmModel::KYO_8W: return "KYO8W";
+    case AlarmModel::KYO_32: return "KYO32";
+    case AlarmModel::KYO_32G: return "KYO32G";
+    default: return "Unknown";
+  }
+}
+
 void BentelKyo::dump_config() {
   ESP_LOGCONFIG(TAG, "Bentel KYO:");
   if (this->model_detected_) {
-    const char *model_name;
-    switch (this->alarm_model_) {
-      case AlarmModel::KYO_4: model_name = "KYO4"; break;
-      case AlarmModel::KYO_8: model_name = "KYO8"; break;
-      case AlarmModel::KYO_8G: model_name = "KYO8G"; break;
-      case AlarmModel::KYO_8W: model_name = "KYO8W"; break;
-      case AlarmModel::KYO_32: model_name = "KYO32"; break;
-      case AlarmModel::KYO_32G: model_name = "KYO32G"; break;
-      default: model_name = "Unknown"; break;
-    }
-    ESP_LOGCONFIG(TAG, "  Model: %s", model_name);
+    ESP_LOGCONFIG(TAG, "  Model: %s", alarm_model_name_(this->alarm_model_));
     ESP_LOGCONFIG(TAG, "  Firmware: %s", this->firmware_version_);
     ESP_LOGCONFIG(TAG, "  Max Zones: %d", this->max_zones_);
   } else {
@@ -126,8 +128,7 @@ void BentelKyo::loop() {
         int cmd_len;
         if (this->alarm_model_ == AlarmModel::KYO_32G) {
           cmd = CMD_GET_PARTITION_KYO32G; cmd_len = sizeof(CMD_GET_PARTITION_KYO32G);
-        } else if (this->alarm_model_ == AlarmModel::KYO_8 || this->alarm_model_ == AlarmModel::KYO_4 ||
-                   this->alarm_model_ == AlarmModel::KYO_8G || this->alarm_model_ == AlarmModel::KYO_8W) {
+        } else if (this->is_kyo8_()) {
           cmd = CMD_GET_PARTITION_KYO8; cmd_len = sizeof(CMD_GET_PARTITION_KYO8);
         } else {
           cmd = CMD_GET_PARTITION_KYO32; cmd_len = sizeof(CMD_GET_PARTITION_KYO32);
@@ -356,19 +357,8 @@ bool BentelKyo::detect_alarm_model_(const uint8_t *rx, int count) {
   if (this->firmware_version_sensor_ != nullptr)
     this->firmware_version_sensor_->publish_state(this->firmware_version_);
 
-  if (this->alarm_model_sensor_ != nullptr) {
-    const char *model_name;
-    switch (this->alarm_model_) {
-      case AlarmModel::KYO_4: model_name = "KYO4"; break;
-      case AlarmModel::KYO_8: model_name = "KYO8"; break;
-      case AlarmModel::KYO_8G: model_name = "KYO8G"; break;
-      case AlarmModel::KYO_8W: model_name = "KYO8W"; break;
-      case AlarmModel::KYO_32: model_name = "KYO32"; break;
-      case AlarmModel::KYO_32G: model_name = "KYO32G"; break;
-      default: model_name = "Unknown"; break;
-    }
-    this->alarm_model_sensor_->publish_state(model_name);
-  }
+  if (this->alarm_model_sensor_ != nullptr)
+    this->alarm_model_sensor_->publish_state(alarm_model_name_(this->alarm_model_));
 
   return true;
 }
@@ -378,8 +368,7 @@ bool BentelKyo::detect_alarm_model_(const uint8_t *rx, int count) {
 // ========================================
 
 bool BentelKyo::parse_sensor_status_(const uint8_t *rx, int count) {
-  bool is_kyo8 = (this->alarm_model_ == AlarmModel::KYO_8 || this->alarm_model_ == AlarmModel::KYO_4 ||
-                  this->alarm_model_ == AlarmModel::KYO_8G || this->alarm_model_ == AlarmModel::KYO_8W);
+  bool is_kyo8 = this->is_kyo8_();
 
   // Validate response length matches detected model (or infer model if not yet detected)
   int expected_len = is_kyo8 ? RESP_SENSOR_KYO8 : RESP_SENSOR_KYO32;
@@ -483,8 +472,7 @@ bool BentelKyo::parse_sensor_status_(const uint8_t *rx, int count) {
 }
 
 bool BentelKyo::parse_partition_status_(const uint8_t *rx, int count) {
-  bool is_kyo8 = (this->alarm_model_ == AlarmModel::KYO_8 || this->alarm_model_ == AlarmModel::KYO_4 ||
-                  this->alarm_model_ == AlarmModel::KYO_8G || this->alarm_model_ == AlarmModel::KYO_8W);
+  bool is_kyo8 = this->is_kyo8_();
 
   int expected_len = is_kyo8 ? RESP_PARTITION_KYO8 : RESP_PARTITION_KYO32;
   if (count != expected_len) {
@@ -652,6 +640,17 @@ void BentelKyo::publish_alarm_panels_() {
 // Commands
 // ========================================
 
+void BentelKyo::current_arm_masks_(uint8_t &total, uint8_t &partial, uint8_t &partial_d0) {
+  total = 0x00;
+  partial = 0x00;
+  partial_d0 = 0x00;
+  for (int i = 0; i < KYO_MAX_PARTITIONS; i++) {
+    if (this->partition_armed_total_[i]) total |= (1 << i);
+    if (this->partition_armed_partial_[i]) partial |= (1 << i);
+    if (this->partition_armed_partial_delay0_[i]) partial_d0 |= (1 << i);
+  }
+}
+
 void BentelKyo::arm_partition(uint8_t partition, uint8_t arm_type) {
   if (partition < 1 || partition > KYO_MAX_PARTITIONS) {
     ESP_LOGE(TAG, "Invalid partition %d (1-%d)", partition, KYO_MAX_PARTITIONS);
@@ -662,12 +661,8 @@ void BentelKyo::arm_partition(uint8_t partition, uint8_t arm_type) {
   uint8_t cmd[11] = {0x0F, 0x00, 0xF0, 0x03, 0x00, 0x02, 0x00, 0x00, 0x00, 0xCC, 0xFF};
 
   // Read current arming state to preserve other partitions
-  uint8_t total_mask = 0x00, partial_mask = 0x00, partial_d0_mask = 0x00;
-  for (int i = 0; i < KYO_MAX_PARTITIONS; i++) {
-    if (this->partition_armed_total_[i]) total_mask |= (1 << i);
-    if (this->partition_armed_partial_[i]) partial_mask |= (1 << i);
-    if (this->partition_armed_partial_delay0_[i]) partial_d0_mask |= (1 << i);
-  }
+  uint8_t total_mask, partial_mask, partial_d0_mask;
+  this->current_arm_masks_(total_mask, partial_mask, partial_d0_mask);
 
   uint8_t bit = 1 << (partition - 1);
   if (arm_type == 1)       // total (Away)
@@ -696,12 +691,8 @@ void BentelKyo::disarm_partition(uint8_t partition) {
   uint8_t cmd[11] = {0x0F, 0x00, 0xF0, 0x03, 0x00, 0x02, 0x00, 0x00, 0x00, 0xFF, 0xFF};
 
   // Read current arming state, clear this partition from all modes
-  uint8_t total_mask = 0x00, partial_mask = 0x00, partial_d0_mask = 0x00;
-  for (int i = 0; i < KYO_MAX_PARTITIONS; i++) {
-    if (this->partition_armed_total_[i]) total_mask |= (1 << i);
-    if (this->partition_armed_partial_[i]) partial_mask |= (1 << i);
-    if (this->partition_armed_partial_delay0_[i]) partial_d0_mask |= (1 << i);
-  }
+  uint8_t total_mask, partial_mask, partial_d0_mask;
+  this->current_arm_masks_(total_mask, partial_mask, partial_d0_mask);
 
   // Remove this partition from whichever mask it's in
   uint8_t clear = ~(1 << (partition - 1));
@@ -723,12 +714,8 @@ void BentelKyo::arm_all_partitions(uint8_t arm_type) {
   uint8_t cmd[11] = {0x0F, 0x00, 0xF0, 0x03, 0x00, 0x02, 0x00, 0x00, 0x00, 0xCC, 0xFF};
 
   // Build masks from current state
-  uint8_t total_mask = 0x00, partial_mask = 0x00, partial_d0_mask = 0x00;
-  for (int i = 0; i < KYO_MAX_PARTITIONS; i++) {
-    if (this->partition_armed_total_[i]) total_mask |= (1 << i);
-    if (this->partition_armed_partial_[i]) partial_mask |= (1 << i);
-    if (this->partition_armed_partial_delay0_[i]) partial_d0_mask |= (1 << i);
-  }
+  uint8_t total_mask, partial_mask, partial_d0_mask;
+  this->current_arm_masks_(total_mask, partial_mask, partial_d0_mask);
 
   // Set all registered partition bits
   for (auto *panel : this->alarm_panels_) {
@@ -989,6 +976,15 @@ int BentelKyo::read_register_(uint16_t address, uint8_t length, uint8_t *respons
   return this->send_message_(cmd, 6, response, timeout_ms);
 }
 
+void BentelKyo::trim_panel_name_(char *buf, int len) {
+  for (int j = len - 1; j >= 0; j--) {
+    if (buf[j] == ' ' || buf[j] == '\0')
+      buf[j] = '\0';
+    else
+      break;
+  }
+}
+
 void BentelKyo::read_zone_config_() {
   uint8_t rx[255];
 
@@ -1053,14 +1049,7 @@ void BentelKyo::read_zone_names_() {
       char name_buf[17];
       memcpy(name_buf, &rx[offset], 16);
       name_buf[16] = '\0';
-
-      // Trim trailing spaces
-      for (int j = 15; j >= 0; j--) {
-        if (name_buf[j] == ' ' || name_buf[j] == '\0')
-          name_buf[j] = '\0';
-        else
-          break;
-      }
+      trim_panel_name_(name_buf, 16);
 
       this->zone_name_[zone_idx] = name_buf;
       ESP_LOGD(TAG, "Zone %d name: '%s'", zone_idx + 1, name_buf);
@@ -1134,14 +1123,7 @@ void BentelKyo::read_output_names_() {
       char name_buf[17];
       memcpy(name_buf, &rx[offset], 16);
       name_buf[16] = '\0';
-
-      // Trim trailing spaces
-      for (int j = 15; j >= 0; j--) {
-        if (name_buf[j] == ' ' || name_buf[j] == '\0')
-          name_buf[j] = '\0';
-        else
-          break;
-      }
+      trim_panel_name_(name_buf, 16);
 
       this->output_name_[out_idx] = name_buf;
       ESP_LOGD(TAG, "Output %d name: '%s'", out_idx + 1, name_buf);
@@ -1232,14 +1214,7 @@ void BentelKyo::read_keyfob_names_() {
       char name_buf[17];
       memcpy(name_buf, &rx[offset], 16);
       name_buf[16] = '\0';
-
-      // Trim trailing spaces
-      for (int j = 15; j >= 0; j--) {
-        if (name_buf[j] == ' ' || name_buf[j] == '\0')
-          name_buf[j] = '\0';
-        else
-          break;
-      }
+      trim_panel_name_(name_buf, 16);
 
       this->keyfob_name_[kf_idx] = name_buf;
       ESP_LOGD(TAG, "Keyfob %d name: '%s'", kf_idx + 1, name_buf);
@@ -1269,14 +1244,7 @@ void BentelKyo::read_partition_names_() {
       char name_buf[17];
       memcpy(name_buf, &rx[offset], 16);
       name_buf[16] = '\0';
-
-      // Trim trailing spaces
-      for (int j = 15; j >= 0; j--) {
-        if (name_buf[j] == ' ' || name_buf[j] == '\0')
-          name_buf[j] = '\0';
-        else
-          break;
-      }
+      trim_panel_name_(name_buf, 16);
 
       this->partition_name_[part_idx] = name_buf;
       ESP_LOGD(TAG, "Partition %d name: '%s'", part_idx + 1, name_buf);
@@ -1306,14 +1274,7 @@ void BentelKyo::read_code_names_() {
       char name_buf[17];
       memcpy(name_buf, &rx[offset], 16);
       name_buf[16] = '\0';
-
-      // Trim trailing spaces
-      for (int j = 15; j >= 0; j--) {
-        if (name_buf[j] == ' ' || name_buf[j] == '\0')
-          name_buf[j] = '\0';
-        else
-          break;
-      }
+      trim_panel_name_(name_buf, 16);
 
       this->code_name_[code_idx] = name_buf;
       ESP_LOGD(TAG, "Code %d name: '%s'", code_idx + 1, name_buf);
@@ -1380,10 +1341,7 @@ const char *BentelKyo::decode_event_code_(uint16_t code, uint8_t *entity_out, ch
     const char *entity_type;  // "partition", "zone", "code", "key", or nullptr
   };
 
-  bool is_kyo8 = (this->alarm_model_ == AlarmModel::KYO_4 ||
-                  this->alarm_model_ == AlarmModel::KYO_8 ||
-                  this->alarm_model_ == AlarmModel::KYO_8G ||
-                  this->alarm_model_ == AlarmModel::KYO_8W);
+  bool is_kyo8 = this->is_kyo8_();
 
   // KYO32 table: 8 partitions, 32 zones, 24 codes, 128 keys — sorted by base offset
   static const EventRange ranges_kyo32[] = {

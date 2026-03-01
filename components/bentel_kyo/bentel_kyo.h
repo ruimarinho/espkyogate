@@ -148,6 +148,14 @@ class BentelKyo : public PollingComponent, public uart::UARTDevice {
   void update_datetime(uint8_t day, uint8_t month, uint16_t year,
                        uint8_t hours, uint8_t minutes, uint8_t seconds);
 
+  // Model helpers
+  bool is_kyo8_() const {
+    return this->alarm_model_ == AlarmModel::KYO_4 ||
+           this->alarm_model_ == AlarmModel::KYO_8 ||
+           this->alarm_model_ == AlarmModel::KYO_8G ||
+           this->alarm_model_ == AlarmModel::KYO_8W;
+  }
+
   // Polling control
   void set_polling_enabled(bool enabled);
   bool is_polling_enabled() const { return this->polling_enabled_; }
@@ -188,6 +196,11 @@ class BentelKyo : public PollingComponent, public uart::UARTDevice {
   void read_panel_mode_();
   void read_status_flags_();
   void publish_text_sensors_();
+
+  // Deduplication helpers
+  static const char *alarm_model_name_(AlarmModel model);
+  static void trim_panel_name_(char *buf, int len);
+  void current_arm_masks_(uint8_t &total, uint8_t &partial, uint8_t &partial_d0);
 
   // Checksum helpers
   static uint8_t calculate_crc_(const uint8_t *cmd, int len);
