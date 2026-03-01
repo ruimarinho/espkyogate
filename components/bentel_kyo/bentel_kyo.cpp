@@ -505,14 +505,14 @@ bool BentelKyo::parse_partition_status_(const uint8_t *rx, int count) {
 
   // Model-dependent siren and output parsing
   if (is_kyo8) {
+    // Siren bit is at rx[10] bit 6 for all KYO8 variants
+    this->siren_active_ = (rx[10] >> 6) & 1;
     if (this->alarm_model_ == AlarmModel::KYO_8W) {
-      // KYO8W: rx[10] = siren byte, rx[12] = outputs 1-8
-      this->siren_active_ = (rx[10] >> 6) & 1;
+      // KYO8W: rx[12] = outputs 1-8
       for (int i = 0; i < 8; i++)
         this->output_state_[i] = (rx[12] >> i) & 1;
     } else {
-      // KYO4/KYO8/KYO8G: rx[10] bits 0-4 = outputs 1-5, bit 6 = siren, bit 7 = tamper memory
-      this->siren_active_ = (rx[10] >> 6) & 1;
+      // KYO4/KYO8/KYO8G: rx[10] bits 0-4 = outputs 1-5
       for (int i = 0; i < 5; i++)
         this->output_state_[i] = (rx[10] >> i) & 1;
     }
