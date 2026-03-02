@@ -676,7 +676,7 @@ void BentelKyo::arm_partition(uint8_t partition, uint8_t arm_type) {
   cmd[9] = calculate_crc_(cmd, 9);
 
   uint8_t rx[255];
-  this->send_message_(cmd, sizeof(cmd), rx, 250);
+  this->send_message_(cmd, sizeof(cmd), rx, sizeof(rx), 250);
 }
 
 void BentelKyo::disarm_partition(uint8_t partition) {
@@ -704,7 +704,7 @@ void BentelKyo::disarm_partition(uint8_t partition) {
   cmd[9] = calculate_crc_(cmd, 9);
 
   uint8_t rx[255];
-  this->send_message_(cmd, sizeof(cmd), rx, 250);
+  this->send_message_(cmd, sizeof(cmd), rx, sizeof(rx), 250);
 }
 
 void BentelKyo::arm_all_partitions(uint8_t arm_type) {
@@ -732,7 +732,7 @@ void BentelKyo::arm_all_partitions(uint8_t arm_type) {
   cmd[9] = calculate_crc_(cmd, 9);
 
   uint8_t rx[255];
-  this->send_message_(cmd, sizeof(cmd), rx, 250);
+  this->send_message_(cmd, sizeof(cmd), rx, sizeof(rx), 250);
 }
 
 void BentelKyo::disarm_all_partitions() {
@@ -742,7 +742,7 @@ void BentelKyo::disarm_all_partitions() {
   cmd[9] = calculate_crc_(cmd, 9);
 
   uint8_t rx[255];
-  this->send_message_(cmd, sizeof(cmd), rx, 250);
+  this->send_message_(cmd, sizeof(cmd), rx, sizeof(rx), 250);
 }
 
 void BentelKyo::arm_preset(uint8_t total_mask, uint8_t partial_mask,
@@ -760,13 +760,13 @@ void BentelKyo::arm_preset(uint8_t total_mask, uint8_t partial_mask,
   cmd[9] = calculate_crc_(cmd, 9);
 
   uint8_t rx[255];
-  this->send_message_(cmd, sizeof(cmd), rx, 250);
+  this->send_message_(cmd, sizeof(cmd), rx, sizeof(rx), 250);
 }
 
 void BentelKyo::reset_alarms() {
   ESP_LOGI(TAG, "Reset alarms");
   uint8_t rx[255];
-  this->send_message_(CMD_RESET_ALARMS, sizeof(CMD_RESET_ALARMS), rx, 250);
+  this->send_message_(CMD_RESET_ALARMS, sizeof(CMD_RESET_ALARMS), rx, sizeof(rx), 250);
 }
 
 void BentelKyo::activate_output(uint8_t output_number) {
@@ -782,7 +782,7 @@ void BentelKyo::activate_output(uint8_t output_number) {
   cmd[8] = cmd[6];
 
   uint8_t rx[255];
-  this->send_message_(cmd, sizeof(cmd), rx, 250);
+  this->send_message_(cmd, sizeof(cmd), rx, sizeof(rx), 250);
 }
 
 void BentelKyo::deactivate_output(uint8_t output_number) {
@@ -798,7 +798,7 @@ void BentelKyo::deactivate_output(uint8_t output_number) {
   cmd[8] = cmd[7];
 
   uint8_t rx[255];
-  this->send_message_(cmd, sizeof(cmd), rx, 250);
+  this->send_message_(cmd, sizeof(cmd), rx, sizeof(rx), 250);
 }
 
 void BentelKyo::include_zone(uint8_t zone_number) {
@@ -827,7 +827,7 @@ void BentelKyo::include_zone(uint8_t zone_number) {
   cmd[14] = calculate_checksum_(cmd, 6, 14);
 
   uint8_t rx[255];
-  this->send_message_(cmd, sizeof(cmd), rx, 250);
+  this->send_message_(cmd, sizeof(cmd), rx, sizeof(rx), 250);
 }
 
 void BentelKyo::exclude_zone(uint8_t zone_number) {
@@ -856,7 +856,7 @@ void BentelKyo::exclude_zone(uint8_t zone_number) {
   cmd[14] = calculate_checksum_(cmd, 6, 14);
 
   uint8_t rx[255];
-  this->send_message_(cmd, sizeof(cmd), rx, 250);
+  this->send_message_(cmd, sizeof(cmd), rx, sizeof(rx), 250);
 }
 
 void BentelKyo::update_datetime(uint8_t day, uint8_t month, uint16_t year,
@@ -880,14 +880,19 @@ void BentelKyo::update_datetime(uint8_t day, uint8_t month, uint16_t year,
   cmd[12] = calculate_checksum_(cmd, 6, 12);
 
   uint8_t rx[255];
-  this->send_message_(cmd, sizeof(cmd), rx, 300);
+  this->send_message_(cmd, sizeof(cmd), rx, sizeof(rx), 300);
 }
 
 // ========================================
 // Serial I/O
 // ========================================
 
-int BentelKyo::send_message_(const uint8_t *cmd, int cmd_len, uint8_t *response, uint32_t timeout_ms) {
+int BentelKyo::send_message_(const uint8_t *cmd, int cmd_len, uint8_t *response, size_t response_len, uint32_t timeout_ms) {
+  if (response == nullptr || response_len == 0) {
+    ESP_LOGE(TAG, "Invalid response buffer");
+    return -1;
+  }
+
   // Cancel any in-flight async transaction so loop() won't steal our bytes
   bool aborted_async = false;
   if (this->serial_state_ == SerialState::WAITING_RESPONSE) {
@@ -916,15 +921,24 @@ int BentelKyo::send_message_(const uint8_t *cmd, int cmd_len, uint8_t *response,
 
   // Read directly into caller's buffer with inter-byte silence detection
   int index = 0;
+  int max_read = static_cast<int>(response_len);
+  if (max_read > 254)
+    max_read = 254;
 
   uint32_t start_ms = millis();
   uint32_t last_byte_ms = start_ms;
 
   while ((millis() - start_ms) < timeout_ms) {
     if (this->available() > 0) {
-      while (this->available() > 0 && index < 254)
+      int prev_index = index;
+      while (this->available() > 0 && index < max_read)
         response[index++] = this->read();
-      last_byte_ms = millis();
+      if (index > prev_index)
+        last_byte_ms = millis();
+      if (index >= max_read) {
+        ESP_LOGW(TAG, "Response truncated: buffer too small (%d bytes)", max_read);
+        break;
+      }
     } else if (index > cmd_len && (millis() - last_byte_ms) > INTER_BYTE_SILENCE_MS) {
       // Got data beyond echo and silence detected — response complete
       break;
@@ -956,7 +970,7 @@ int BentelKyo::send_message_(const uint8_t *cmd, int cmd_len, uint8_t *response,
 // Configuration register reads
 // ========================================
 
-int BentelKyo::read_register_(uint16_t address, uint8_t length, uint8_t *response, uint32_t timeout_ms) {
+int BentelKyo::read_register_(uint16_t address, uint8_t length, uint8_t *response, size_t response_len, uint32_t timeout_ms) {
   uint8_t cmd[6];
   cmd[0] = 0xF0;
   cmd[1] = address & 0xFF;           // ADDR_LO first (little-endian)
@@ -968,7 +982,7 @@ int BentelKyo::read_register_(uint16_t address, uint8_t length, uint8_t *respons
   ESP_LOGD(TAG, "Read register 0x%04X len=%d cmd: %02X %02X %02X %02X %02X %02X",
            address, length, cmd[0], cmd[1], cmd[2], cmd[3], cmd[4], cmd[5]);
 
-  return this->send_message_(cmd, 6, response, timeout_ms);
+  return this->send_message_(cmd, 6, response, response_len, timeout_ms);
 }
 
 void BentelKyo::trim_panel_name_(char *buf, int len) {
@@ -984,7 +998,7 @@ void BentelKyo::read_zone_config_() {
   uint8_t rx[255];
 
   // Read zones 1-16: address 0x009F, 63 bytes (returns 64 data bytes)
-  int count = this->read_register_(0x009F, 0x3F, rx, 300);
+  int count = this->read_register_(0x009F, 0x3F, rx, sizeof(rx), 300);
   if (count < 6 + 64) {
     ESP_LOGW(TAG, "Zone config read 1-16 failed: got %d bytes", count);
     return;
@@ -1002,7 +1016,7 @@ void BentelKyo::read_zone_config_() {
 
   // Read zones 17-32 (only for KYO32 models)
   if (this->max_zones_ > 16) {
-    count = this->read_register_(0x00DF, 0x3F, rx, 300);
+    count = this->read_register_(0x00DF, 0x3F, rx, sizeof(rx), 300);
     if (count < 6 + 64) {
       ESP_LOGW(TAG, "Zone config read 17-32 failed: got %d bytes", count);
       return;
@@ -1029,7 +1043,7 @@ void BentelKyo::read_zone_names_() {
 
   for (int r = 0; r < num_reads; r++) {
     uint8_t rx[255];
-    int count = this->read_register_(BASE_ADDRS[r], 0x3F, rx, 300);
+    int count = this->read_register_(BASE_ADDRS[r], 0x3F, rx, sizeof(rx), 300);
     if (count < 6 + 64) {
       ESP_LOGW(TAG, "Zone names read at 0x%04X failed: got %d bytes", BASE_ADDRS[r], count);
       break;
@@ -1067,7 +1081,7 @@ bool BentelKyo::read_esn_next_(uint16_t base_addr, int max_count, int &read_inde
 
   uint8_t rx[16];
   uint16_t addr = base_addr + (i * 3);
-  int count = this->read_register_(addr, 0x02, rx, 1500);
+  int count = this->read_register_(addr, 0x02, rx, sizeof(rx), 1500);
   if (count < 6 + 3) {
     if (i == 0) {
       ESP_LOGW(TAG, "%s ESN register 0x%04X not available on this panel", entity_name, base_addr);
@@ -1104,7 +1118,7 @@ void BentelKyo::read_output_names_() {
 
   for (int r = 0; r < num_reads; r++) {
     uint8_t rx[255];
-    int count = this->read_register_(BASE_ADDRS[r], 0x3F, rx, 300);
+    int count = this->read_register_(BASE_ADDRS[r], 0x3F, rx, sizeof(rx), 300);
     if (count < 6 + 64) {
       ESP_LOGW(TAG, "Output names read at 0x%04X failed: got %d bytes", BASE_ADDRS[r], count);
       break;
@@ -1132,7 +1146,7 @@ void BentelKyo::read_partition_config_() {
   // Bytes 0-15: entry/exit timers (2 bytes per partition: entry, exit) for 8 partitions
   // Bytes 16-23: siren duration (1 byte per partition)
   uint8_t rx[255];
-  int count = this->read_register_(0x016F, 0x1A, rx, 300);
+  int count = this->read_register_(0x016F, 0x1A, rx, sizeof(rx), 300);
   if (count < 6 + 26) {
     ESP_LOGW(TAG, "Timer register read failed: got %d bytes", count);
     return;
@@ -1162,7 +1176,7 @@ void BentelKyo::read_keyfob_names_() {
 
   for (int r = 0; r < num_reads; r++) {
     uint8_t rx[255];
-    int count = this->read_register_(BASE_ADDRS[r], 0x3F, rx, 300);
+    int count = this->read_register_(BASE_ADDRS[r], 0x3F, rx, sizeof(rx), 300);
     if (count < 6 + 64) {
       ESP_LOGW(TAG, "Keyfob names read at 0x%04X failed: got %d bytes", BASE_ADDRS[r], count);
       break;
@@ -1192,7 +1206,7 @@ void BentelKyo::read_partition_names_() {
 
   for (int r = 0; r < num_reads; r++) {
     uint8_t rx[255];
-    int count = this->read_register_(BASE_ADDRS[r], 0x3F, rx, 300);
+    int count = this->read_register_(BASE_ADDRS[r], 0x3F, rx, sizeof(rx), 300);
     if (count < 6 + 64) {
       ESP_LOGW(TAG, "Partition names read at 0x%04X failed: got %d bytes", BASE_ADDRS[r], count);
       break;
@@ -1222,7 +1236,7 @@ void BentelKyo::read_code_names_() {
 
   for (int r = 0; r < num_reads; r++) {
     uint8_t rx[255];
-    int count = this->read_register_(BASE_ADDRS[r], 0x3F, rx, 300);
+    int count = this->read_register_(BASE_ADDRS[r], 0x3F, rx, sizeof(rx), 300);
     if (count < 6 + 64) {
       ESP_LOGW(TAG, "Code names read at 0x%04X failed: got %d bytes", BASE_ADDRS[r], count);
       break;
@@ -1247,7 +1261,7 @@ void BentelKyo::read_code_names_() {
 
 void BentelKyo::read_panel_mode_() {
   uint8_t rx[16];
-  int count = this->read_register_(0x01E6, 0x02, rx, 300);
+  int count = this->read_register_(0x01E6, 0x02, rx, sizeof(rx), 300);
   if (count < 6 + 2) {
     ESP_LOGW(TAG, "Panel mode read failed: got %d bytes", count);
     return;
@@ -1265,7 +1279,7 @@ void BentelKyo::read_panel_mode_() {
 
 void BentelKyo::read_status_flags_() {
   uint8_t rx[16];
-  int count = this->read_register_(0x1503, 0x05, rx, 300);
+  int count = this->read_register_(0x1503, 0x05, rx, sizeof(rx), 300);
   if (count < 6 + 5) {
     ESP_LOGW(TAG, "Status flags read failed: got %d bytes", count);
     return;
@@ -1399,7 +1413,7 @@ bool BentelKyo::read_event_log_next_() {
   ESP_LOGD(TAG, "Event log chunk %d/28 (0x%04X)", chunk + 1, addr);
 
   uint8_t rx[255];
-  int count = this->read_register_(addr, 0x3F, rx, 500);
+  int count = this->read_register_(addr, 0x3F, rx, sizeof(rx), 500);
   if (count < 6 + 63) {
     ESP_LOGW(TAG, "Event log chunk %d read failed at 0x%04X: got %d bytes", chunk + 1, addr, count);
     this->event_log_chunk_index_++;

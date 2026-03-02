@@ -18,6 +18,7 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <cstddef>
 
 namespace esphome {
 namespace bentel_kyo {
@@ -187,8 +188,10 @@ class BentelKyo : public PollingComponent, public uart::UARTDevice {
   bool parse_partition_status_(const uint8_t *rx, int count);
   void send_command_async_(const uint8_t *cmd, int cmd_len, PendingOp pending_op, uint32_t timeout_ms = 80);
   void handle_serial_failure_();
-  int send_message_(const uint8_t *cmd, int cmd_len, uint8_t *response, uint32_t timeout_ms = SERIAL_TIMEOUT_MS);
-  int read_register_(uint16_t address, uint8_t length, uint8_t *response, uint32_t timeout_ms = SERIAL_TIMEOUT_MS);
+  int send_message_(const uint8_t *cmd, int cmd_len, uint8_t *response, size_t response_len,
+                    uint32_t timeout_ms = SERIAL_TIMEOUT_MS);
+  int read_register_(uint16_t address, uint8_t length, uint8_t *response, size_t response_len,
+                     uint32_t timeout_ms = SERIAL_TIMEOUT_MS);
   void read_zone_config_();
   void read_zone_names_();
   bool read_zone_esn_next_();    // reads one zone ESN per call, returns true when done
