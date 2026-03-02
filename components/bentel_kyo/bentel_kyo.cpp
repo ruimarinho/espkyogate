@@ -918,10 +918,8 @@ int BentelKyo::send_message_(const uint8_t *cmd, int cmd_len, uint8_t *response,
   // Send command
   this->write_array(cmd, cmd_len);
 
-  // Non-blocking read with inter-byte silence detection
+  // Read directly into caller's buffer with inter-byte silence detection
   int index = 0;
-  uint8_t rx_buf[255];
-  memset(response, 0, 254);
 
   uint32_t start_ms = millis();
   uint32_t last_byte_ms = start_ms;
@@ -929,7 +927,7 @@ int BentelKyo::send_message_(const uint8_t *cmd, int cmd_len, uint8_t *response,
   while ((millis() - start_ms) < timeout_ms) {
     if (this->available() > 0) {
       while (this->available() > 0 && index < 254)
-        rx_buf[index++] = this->read();
+        response[index++] = this->read();
       last_byte_ms = millis();
     } else if (index > cmd_len && (millis() - last_byte_ms) > INTER_BYTE_SILENCE_MS) {
       // Got data beyond echo and silence detected — response complete
@@ -949,13 +947,12 @@ int BentelKyo::send_message_(const uint8_t *cmd, int cmd_len, uint8_t *response,
     int data_end = index - 1;
     uint8_t expected_chk = 0;
     for (int i = data_start; i < data_end; i++)
-      expected_chk += rx_buf[i];
+      expected_chk += response[i];
 
-    if (expected_chk != rx_buf[data_end])
-      ESP_LOGW(TAG, "Response checksum mismatch: expected 0x%02X, got 0x%02X", expected_chk, rx_buf[data_end]);
+    if (expected_chk != response[data_end])
+      ESP_LOGW(TAG, "Response checksum mismatch: expected 0x%02X, got 0x%02X", expected_chk, response[data_end]);
   }
 
-  memcpy(response, rx_buf, index);
   return index;
 }
 
@@ -1285,7 +1282,7 @@ void BentelKyo::read_code_names_() {
 }
 
 void BentelKyo::read_panel_mode_() {
-  uint8_t rx[255];
+  uint8_t rx[16];
   int count = this->read_register_(0x01E6, 0x02, rx, 300);
   if (count < 6 + 2) {
     ESP_LOGW(TAG, "Panel mode read failed: got %d bytes", count);
@@ -1303,7 +1300,7 @@ void BentelKyo::read_panel_mode_() {
 }
 
 void BentelKyo::read_status_flags_() {
-  uint8_t rx[255];
+  uint8_t rx[16];
   int count = this->read_register_(0x1503, 0x05, rx, 300);
   if (count < 6 + 5) {
     ESP_LOGW(TAG, "Status flags read failed: got %d bytes", count);
