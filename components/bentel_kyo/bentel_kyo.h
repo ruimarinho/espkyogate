@@ -188,6 +188,8 @@ class BentelKyo : public PollingComponent, public uart::UARTDevice {
   void read_output_names_();
   void read_partition_config_();
   bool read_keyfob_esn_next_();  // reads one keyfob ESN per call, returns true when done
+  bool read_esn_next_(uint16_t base_addr, int max_count, int &read_index,
+                      std::string *esn_array, const char *entity_name);
   void read_keyfob_names_();
   void read_partition_names_();
   void read_code_names_();

@@ -1056,48 +1056,49 @@ void BentelKyo::read_zone_names_() {
   }
 }
 
-bool BentelKyo::read_zone_esn_next_() {
-  // Zone ESN at 0xC045: 3 bytes per zone, per-zone reads with stride 3
-  // Reads ONE zone per call (one per update cycle) to avoid blocking the main loop.
+bool BentelKyo::read_esn_next_(uint16_t base_addr, int max_count, int &read_index,
+                               std::string *esn_array, const char *entity_name) {
+  // Reads ONE ESN slot per call (one per update cycle) to avoid blocking the main loop.
   // USB capture shows panel takes ~1s to respond to 0xC0xx reads (EEPROM access).
-  // Returns true when all zones have been read.
-  int i = this->esn_read_index_;
+  // Returns true when all slots have been read.
+  int i = read_index;
 
-  if (i >= this->max_zones_) {
-    for (int z = 0; z < this->max_zones_; z++) {
-      if (this->zone_enrolled_[z])
-        ESP_LOGD(TAG, "Zone %d serial: %s", z + 1, this->zone_esn_[z].c_str());
-    }
-    this->esn_read_index_ = 0;
+  if (i >= max_count) {
+    ESP_LOGD(TAG, "%s ESN read complete (%d slots)", entity_name, max_count);
+    read_index = 0;
     return true;
   }
 
-  uint8_t rx[255];
-  uint16_t addr = 0xC045 + (i * 3);
+  uint8_t rx[16];
+  uint16_t addr = base_addr + (i * 3);
   int count = this->read_register_(addr, 0x02, rx, 1500);
   if (count < 6 + 3) {
-    ESP_LOGW(TAG, "Zone %d ESN read failed at 0x%04X (%d bytes)", i + 1, addr, count);
     if (i == 0) {
-      ESP_LOGW(TAG, "Zone ESN register 0xC045 not available on this panel");
-      // Skip all zone ESN reads
-      this->esn_read_index_ = 0;
+      ESP_LOGW(TAG, "%s ESN register 0x%04X not available on this panel", entity_name, base_addr);
+      read_index = 0;
       return true;
     }
-    this->esn_read_index_++;
+    read_index++;
     return false;
   }
 
   bool is_empty = (rx[6] == 0x00 && rx[7] == 0x00 && rx[8] == 0x00);
   if (is_empty) {
-    this->zone_esn_[i] = "Not enrolled";
+    esn_array[i] = "Not enrolled";
   } else {
     char sn_buf[12];
     snprintf(sn_buf, sizeof(sn_buf), "%02X%02X%02X", rx[6], rx[7], rx[8]);
-    this->zone_esn_[i] = sn_buf;
+    esn_array[i] = sn_buf;
+    ESP_LOGD(TAG, "%s %d serial: %s", entity_name, i + 1, sn_buf);
   }
 
-  this->esn_read_index_++;
+  read_index++;
   return false;
+}
+
+bool BentelKyo::read_zone_esn_next_() {
+  return this->read_esn_next_(0xC045, this->max_zones_, this->esn_read_index_,
+                               this->zone_esn_, "Zone");
 }
 
 void BentelKyo::read_output_names_() {
@@ -1154,41 +1155,8 @@ void BentelKyo::read_partition_config_() {
 }
 
 bool BentelKyo::read_keyfob_esn_next_() {
-  // Keyfob ESN at 0xC0B1: 3 bytes per keyfob, 16 slots
-  // Reads ONE keyfob per call (one per update cycle) to avoid blocking the main loop.
-  // Returns true when all keyfobs have been read.
-  int i = this->keyfob_read_index_;
-
-  if (i >= KYO_MAX_KEYFOBS) {
-    this->keyfob_read_index_ = 0;
-    return true;
-  }
-
-  uint8_t rx[255];
-  uint16_t addr = 0xC0B1 + (i * 3);
-  int count = this->read_register_(addr, 0x02, rx, 1500);
-  if (count < 6 + 3) {
-    if (i == 0) {
-      ESP_LOGW(TAG, "Keyfob ESN register 0xC0B1 not available on this panel");
-      this->keyfob_read_index_ = 0;
-      return true;
-    }
-    this->keyfob_read_index_++;
-    return false;
-  }
-
-  bool is_empty = (rx[6] == 0x00 && rx[7] == 0x00 && rx[8] == 0x00);
-  if (is_empty) {
-    this->keyfob_esn_[i] = "Not enrolled";
-  } else {
-    char sn_buf[12];
-    snprintf(sn_buf, sizeof(sn_buf), "%02X%02X%02X", rx[6], rx[7], rx[8]);
-    this->keyfob_esn_[i] = sn_buf;
-    ESP_LOGD(TAG, "Keyfob %d serial: %s", i + 1, sn_buf);
-  }
-
-  this->keyfob_read_index_++;
-  return false;
+  return this->read_esn_next_(0xC0B1, KYO_MAX_KEYFOBS, this->keyfob_read_index_,
+                               this->keyfob_esn_, "Keyfob");
 }
 
 void BentelKyo::read_keyfob_names_() {
