@@ -118,6 +118,13 @@ enum class SerialState : uint8_t {
   WAITING_RESPONSE,
 };
 
+// Pending operation type for async serial dispatch
+enum class PendingOp : uint8_t {
+  DETECT = 0,
+  SENSOR = 1,
+  PARTITION = 2,
+};
+
 class BentelKyo : public PollingComponent, public uart::UARTDevice {
  public:
   void setup() override;
@@ -178,7 +185,7 @@ class BentelKyo : public PollingComponent, public uart::UARTDevice {
   bool detect_alarm_model_(const uint8_t *rx, int count);
   bool parse_sensor_status_(const uint8_t *rx, int count);
   bool parse_partition_status_(const uint8_t *rx, int count);
-  void send_command_async_(const uint8_t *cmd, int cmd_len, uint8_t pending_op, uint32_t timeout_ms = 80);
+  void send_command_async_(const uint8_t *cmd, int cmd_len, PendingOp pending_op, uint32_t timeout_ms = 80);
   void handle_serial_failure_();
   int send_message_(const uint8_t *cmd, int cmd_len, uint8_t *response, uint32_t timeout_ms = SERIAL_TIMEOUT_MS);
   int read_register_(uint16_t address, uint8_t length, uint8_t *response, uint32_t timeout_ms = SERIAL_TIMEOUT_MS);
@@ -222,6 +229,7 @@ class BentelKyo : public PollingComponent, public uart::UARTDevice {
   std::vector<RegisteredTextSensor> text_sensors_;
   text_sensor::TextSensor *firmware_version_sensor_{nullptr};
   text_sensor::TextSensor *alarm_model_sensor_{nullptr};
+  binary_sensor::BinarySensor *communication_sensor_{nullptr};
 
   // Model and state
   AlarmModel alarm_model_{AlarmModel::UNKNOWN};
@@ -237,8 +245,7 @@ class BentelKyo : public PollingComponent, public uart::UARTDevice {
   uint32_t serial_sent_ms_{0};
   uint32_t serial_last_byte_ms_{0};
   uint32_t serial_timeout_ms_{80};
-  // Callback: 0=detect, 1=sensor, 2=partition
-  uint8_t serial_pending_op_{0};
+  PendingOp serial_pending_op_{PendingOp::DETECT};
 
   // Polling control
   bool polling_enabled_{true};

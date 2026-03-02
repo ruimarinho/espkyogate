@@ -55,7 +55,7 @@ void BentelKyo::dump_config() {
 // Async serial: send command (non-blocking)
 // ========================================
 
-void BentelKyo::send_command_async_(const uint8_t *cmd, int cmd_len, uint8_t pending_op, uint32_t timeout_ms) {
+void BentelKyo::send_command_async_(const uint8_t *cmd, int cmd_len, PendingOp pending_op, uint32_t timeout_ms) {
   // Flush RX buffer
   while (this->available() > 0)
     this->read();
@@ -103,7 +103,7 @@ void BentelKyo::loop() {
 
   if (count <= 0) {
     // No data at all — panel not responding
-    ESP_LOGD(TAG, "No answer from serial port (op=%d)", this->serial_pending_op_);
+    ESP_LOGD(TAG, "No answer from serial port (op=%d)", static_cast<int>(this->serial_pending_op_));
     this->handle_serial_failure_();
     return;
   }
@@ -111,16 +111,16 @@ void BentelKyo::loop() {
   // Dispatch based on pending operation
   bool ok = false;
   switch (this->serial_pending_op_) {
-    case 0:  // detect model
+    case PendingOp::DETECT:
       ok = this->detect_alarm_model_(this->serial_rx_buf_, count);
       if (ok) {
         // Immediately poll sensor+partition status so alarm panels get real state
         // before config reads start (otherwise panels default to DISARMED for ~75s)
-        this->send_command_async_(CMD_GET_SENSOR_STATUS, sizeof(CMD_GET_SENSOR_STATUS), 1, 80);
+        this->send_command_async_(CMD_GET_SENSOR_STATUS, sizeof(CMD_GET_SENSOR_STATUS), PendingOp::SENSOR, 80);
         return;  // Don't update health yet — wait for sensor+partition response
       }
       break;
-    case 1:  // sensor status
+    case PendingOp::SENSOR:
       ok = this->parse_sensor_status_(this->serial_rx_buf_, count);
       if (ok) {
         // Chain: immediately send partition status query
@@ -133,11 +133,11 @@ void BentelKyo::loop() {
         } else {
           cmd = CMD_GET_PARTITION_KYO32; cmd_len = sizeof(CMD_GET_PARTITION_KYO32);
         }
-        this->send_command_async_(cmd, cmd_len, 2, 80);
+        this->send_command_async_(cmd, cmd_len, PendingOp::PARTITION, 80);
         return;  // Don't update health yet — wait for partition response
       }
       break;
-    case 2:  // partition status
+    case PendingOp::PARTITION:
       ok = this->parse_partition_status_(this->serial_rx_buf_, count);
       break;
   }
@@ -169,11 +169,8 @@ void BentelKyo::handle_serial_failure_() {
   }
 
   // Publish communication status
-  for (auto &entry : this->binary_sensors_) {
-    if (entry.type == BinarySensorType::COMMUNICATION) {
-      entry.sensor->publish_state(this->communication_ok_);
-    }
-  }
+  if (this->communication_sensor_ != nullptr)
+    this->communication_sensor_->publish_state(this->communication_ok_);
 }
 
 // ========================================
@@ -222,7 +219,7 @@ void BentelKyo::update() {
 
   // If model not yet detected, send version query
   if (!this->model_detected_) {
-    this->send_command_async_(CMD_GET_VERSION, sizeof(CMD_GET_VERSION), 0, 80);
+    this->send_command_async_(CMD_GET_VERSION, sizeof(CMD_GET_VERSION), PendingOp::DETECT, 80);
     return;
   }
 
@@ -280,14 +277,11 @@ void BentelKyo::update() {
   }
 
   // Normal polling: send sensor status query (partition query chains from loop())
-  this->send_command_async_(CMD_GET_SENSOR_STATUS, sizeof(CMD_GET_SENSOR_STATUS), 1, 80);
+  this->send_command_async_(CMD_GET_SENSOR_STATUS, sizeof(CMD_GET_SENSOR_STATUS), PendingOp::SENSOR, 80);
 
   // Publish communication status
-  for (auto &entry : this->binary_sensors_) {
-    if (entry.type == BinarySensorType::COMMUNICATION) {
-      entry.sensor->publish_state(this->communication_ok_);
-    }
-  }
+  if (this->communication_sensor_ != nullptr)
+    this->communication_sensor_->publish_state(this->communication_ok_);
 }
 
 // ========================================
@@ -300,6 +294,8 @@ void BentelKyo::register_alarm_panel(BentelKyoAlarmPanel *panel) {
 
 void BentelKyo::register_binary_sensor(binary_sensor::BinarySensor *sensor, BinarySensorType type, uint8_t index) {
   this->binary_sensors_.push_back({sensor, type, index});
+  if (type == BinarySensorType::COMMUNICATION)
+    this->communication_sensor_ = sensor;
 }
 
 void BentelKyo::register_text_sensor(text_sensor::TextSensor *sensor, TextSensorType type, uint8_t index) {
@@ -1498,14 +1494,20 @@ void BentelKyo::publish_text_sensors_() {
         if (idx >= KYO_MAX_KEYFOBS) continue;
         entry.sensor->publish_state(this->keyfob_name_[idx].empty() ? "N/A" : this->keyfob_name_[idx]);
         break;
-      case TEXT_PARTITION_ENTRY_DELAY:
+      case TEXT_PARTITION_ENTRY_DELAY: {
         if (idx >= KYO_MAX_PARTITIONS) continue;
-        entry.sensor->publish_state(to_string(this->partition_entry_delay_[idx]) + "s");
+        char delay_buf[16];
+        snprintf(delay_buf, sizeof(delay_buf), "%ds", this->partition_entry_delay_[idx]);
+        entry.sensor->publish_state(delay_buf);
         break;
-      case TEXT_PARTITION_EXIT_DELAY:
+      }
+      case TEXT_PARTITION_EXIT_DELAY: {
         if (idx >= KYO_MAX_PARTITIONS) continue;
-        entry.sensor->publish_state(to_string(this->partition_exit_delay_[idx]) + "s");
+        char delay_buf[16];
+        snprintf(delay_buf, sizeof(delay_buf), "%ds", this->partition_exit_delay_[idx]);
+        entry.sensor->publish_state(delay_buf);
         break;
+      }
       case TEXT_PARTITION_SIREN_TIMER:
         if (idx >= KYO_MAX_PARTITIONS) continue;
         entry.sensor->publish_state(to_string(this->partition_siren_timer_[idx]));
